@@ -1,4 +1,4 @@
-/app/bin/
+/packaging/fnos/app/bin/
 /dist/
 /.tools/
 *.fpk

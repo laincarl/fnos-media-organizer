@@ -1,9 +1,8 @@
-package main
+package organizer
 
 import (
 	"context"
 	"crypto/rand"
-	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -21,10 +20,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
-)
 
-//go:embed web/*
-var web embed.FS
+	webassets "github.com/laincarl/fnos-media-organizer/web"
+)
 
 func randomID() string {
 	b := make([]byte, 24)
@@ -130,13 +128,13 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'none'")
 	if r.URL.Path == "/" && r.Method == "GET" {
-		b, _ := web.ReadFile("web/index.html")
+		b, _ := webassets.Assets.ReadFile("index.html")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(b)
 		return
 	}
 	if (r.URL.Path == "/app.js" || r.URL.Path == "/style.css" || r.URL.Path == "/app-icon.png") && r.Method == "GET" {
-		b, _ := web.ReadFile("web" + r.URL.Path)
+		b, _ := webassets.Assets.ReadFile(strings.TrimPrefix(r.URL.Path, "/"))
 		if strings.HasSuffix(r.URL.Path, ".js") {
 			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		} else if strings.HasSuffix(r.URL.Path, ".png") {
@@ -514,7 +512,9 @@ func envOr(key, fallback string) string {
 	}
 	return fallback
 }
-func main() {
+
+// Run starts the organizer service and waits for graceful shutdown.
+func Run() {
 	socket := flag.String("socket", filepath.Join(envOr("TRIM_APPDEST", "."), "app.sock"), "统一网关 Unix socket")
 	data := flag.String("data", envOr("TRIM_PKGVAR", "./data"), "数据目录")
 	rootsValue := flag.String("roots", os.Getenv("TRIM_DATA_ACCESSIBLE_PATHS"), "获授权目录列表")

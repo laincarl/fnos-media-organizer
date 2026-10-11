@@ -24,10 +24,10 @@ jobs:
           node-version: '22'
       - name: Verify source
         run: |
-          test -z "$(gofmt -l *.go)"
+          test -z "$(gofmt -l cmd internal web)"
           go vet ./...
           go test -race ./...
-          go test -c -o /tmp/organizer.test
+          go test -c -o /tmp/organizer.test ./internal/organizer
           sudo /tmp/organizer.test -test.run='TestMoveOtherOwner|TestAtomicMoveNoReplace|TestCleanup|TestDirectoryRemoval'
           node --check web/app.js
       - name: Check release version
@@ -35,7 +35,7 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          version=$(sed -n 's/^version=//p' manifest)
+          version=$(sed -n 's/^version=//p' packaging/fnos/manifest)
           test "$TAG" = "v$version"
           test -f "docs/releases/$TAG.md"
       - name: Build FPK and verify lifecycle

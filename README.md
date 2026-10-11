@@ -68,6 +68,20 @@
 
 标准安装连接本机 `http://127.0.0.1:5666`；自定义部署可设置服务环境变量 `ORGANIZER_MEDIA_BASE`，但必须连接同一 NAS 影视实例。
 
+## 目录结构
+
+```text
+cmd/fnos-media-organizer/  服务启动入口
+internal/organizer/        影视接口、网关、命名规则、文件整理及对应测试
+web/                      页面、样式、脚本和嵌入资源定义
+packaging/fnos/            FPK 清单、权限配置、生命周期脚本、安装向导和桌面图标
+scripts/                  构建、打包和服务验证脚本
+docs/releases/            版本发布说明
+.github/workflows/        自动构建与发布流水线
+```
+
+构建产物位于 `dist/`，下载的构建工具位于 `.tools/`，均不提交到 Git。Go 测试与对应业务代码放在同一包内，便于维护。
+
 ## 开发与构建
 
 需要 Go 1.24+。FPK 必须在 Linux 文件系统内打包，确保生命周期脚本可执行。
@@ -86,10 +100,10 @@ bash scripts/build.sh
 ### 自动构建与发布
 
 - 推送 `main`、提交 Pull Request 或手动运行 Actions：测试、检查并构建 FPK，上传构建产物。
-- 推送 `v*` 标签：要求标签版本与 `manifest` 一致，验证通过后自动创建 GitHub Release，上传 FPK 和 SHA-256。
+- 推送 `v*` 标签：要求标签版本与 `packaging/fnos/manifest` 一致，验证通过后自动创建 GitHub Release，上传 FPK 和 SHA-256。
 - 发布步骤仅在标签任务中授予 `contents: write`，普通构建使用只读仓库权限。
 
-发布新版本时更新 `manifest` 和 `docs/releases/v<版本>.md`，提交后执行：
+发布新版本时更新 `packaging/fnos/manifest` 和 `docs/releases/v<版本>.md`，提交后执行：
 
 ```bash
 git tag v0.3.21

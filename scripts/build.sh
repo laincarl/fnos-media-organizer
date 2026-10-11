@@ -2,7 +2,7 @@
 set -euo pipefail
 project=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$project"
-version=$(sed -n 's/^version=//p' manifest | tr -d '\r')
+version=$(sed -n 's/^version=//p' packaging/fnos/manifest | tr -d '\r')
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid manifest version' >&2; exit 1; }
 mkdir -p dist .tools
 if [[ -z "${FNPACK:-}" ]]; then
@@ -21,9 +21,8 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -p "$stage/package/app/bin"
-cp -R app/ui cmd config wizard manifest ICON.PNG ICON_256.PNG "$stage/package/"
-mv "$stage/package/ui" "$stage/package/app/ui"
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o "$stage/package/app/bin/media-organizer" .
+cp -R packaging/fnos/. "$stage/package/"
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o "$stage/package/app/bin/media-organizer" ./cmd/fnos-media-organizer
 find "$stage/package" -type d -exec chmod 755 {} +
 find "$stage/package" -type f -exec chmod 644 {} +
 chmod 755 "$stage/package/app/bin/media-organizer" "$stage/package"/cmd/*

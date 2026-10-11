@@ -1,6 +1,6 @@
 //go:build linux
 
-package main
+package organizer
 
 import "golang.org/x/sys/unix"
 
