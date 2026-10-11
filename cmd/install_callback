@@ -1,0 +1,4 @@
+#!/bin/bash
+set -eu
+umask 077
+mkdir -p "${TRIM_PKGVAR}"

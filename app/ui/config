@@ -1,0 +1,17 @@
+{
+  ".url": {
+    "media-organizer.Application": {
+      "title": "飞牛影视整理器",
+      "icon": "images/organizer_v039_{0}.png",
+      "type": "iframe",
+      "protocol": "",
+      "url": "/app/media-organizer",
+      "allUsers": false,
+      "control": {
+        "accessPerm": "readonly"
+      },
+      "gatewayPrefix": "/app/media-organizer",
+      "gatewaySocket": "app.sock"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+appname=media-organizer
+version=0.3.21
+display_name=飞牛影视整理器
+desc=使用飞牛影视已有识别结果，在同一存储空间内预览、移动并重命名影视文件。支持命名规则设置、冲突检查及操作记录。
+platform=x86
+source=thirdparty
+maintainer=laincarl
+distributor=laincarl
+desktop_uidir=ui
+desktop_applaunchname=media-organizer.Application
+checkport=false
+ctl_stop=true
+disable_authorization_path=false

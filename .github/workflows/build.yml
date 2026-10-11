@@ -1,0 +1,66 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify source
+        run: |
+          test -z "$(gofmt -l *.go)"
+          go vet ./...
+          go test -race ./...
+          go test -c -o /tmp/organizer.test
+          sudo /tmp/organizer.test -test.run='TestMoveOtherOwner|TestAtomicMoveNoReplace|TestCleanup|TestDirectoryRemoval'
+          node --check web/app.js
+      - name: Check release version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version=//p' manifest)
+          test "$TAG" = "v$version"
+          test -f "docs/releases/$TAG.md"
+      - name: Build FPK and verify lifecycle
+        run: bash scripts/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnos-media-organizer-x86
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fnos-media-organizer-x86
+          path: dist
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$TAG" dist/* --verify-tag --title "飞牛影视整理器 $TAG" --notes-file "docs/releases/$TAG.md"

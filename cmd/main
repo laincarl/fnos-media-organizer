@@ -1,0 +1,39 @@
+#!/bin/bash
+set -eu
+umask 077
+PID_FILE="${TRIM_PKGVAR}/app.pid"
+BIN="${TRIM_APPDEST}/bin/media-organizer"
+status() {
+    [ -f "$PID_FILE" ] || return 1
+    pid=$(cat "$PID_FILE")
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    kill -0 "$pid" 2>/dev/null || return 1
+    [ "$(readlink "/proc/$pid/exe")" = "$(readlink -f "$BIN")" ]
+}
+case "${1:-}" in
+start)
+    if status; then exit 0; fi
+    unset wizard_access_key ORGANIZER_ACCESS_KEY
+    nohup "$BIN" -data "$TRIM_PKGVAR" -socket "${TRIM_APPDEST}/app.sock" >> "${TRIM_PKGVAR}/service.log" 2>&1 &
+    printf '%s\n' "$!" > "$PID_FILE"
+    sleep 1
+    if ! status; then
+        printf '服务启动失败，请检查应用数据目录 service.log\n' > "${TRIM_TEMP_LOGFILE:-${TRIM_PKGVAR}/last-error.log}"
+        exit 1
+    fi
+    ;;
+stop)
+    if status; then
+        kill -TERM "$pid"
+        for n in $(seq 1 30); do
+            if ! status; then rm -f "$PID_FILE"; exit 0; fi
+            sleep 1
+        done
+        printf '当前文件正在完成移动，请稍后再次停止应用。\n' > "${TRIM_TEMP_LOGFILE:-${TRIM_PKGVAR}/last-error.log}"
+        exit 1
+    fi
+    rm -f "$PID_FILE"
+    ;;
+status) if status; then exit 0; else exit 3; fi ;;
+*) exit 1 ;;
+esac

@@ -1,0 +1,7 @@
+* text=auto
+*.go text eol=lf
+*.sh text eol=lf
+cmd/* text eol=lf
+*.yml text eol=lf
+*.png binary
+*.PNG binary
