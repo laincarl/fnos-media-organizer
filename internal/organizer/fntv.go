@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -182,10 +183,10 @@ func (f *FnTV) Scan(ctx context.Context, guid string, progress func(string)) ([]
 			return nil, nil, errors.New("条目列表格式不兼容")
 		}
 		added := 0
+		pageItems := make([]object, 0, len(items))
 		for _, item := range items {
 			id := str(item, "guid")
 			kind := str(item, "type")
-			title := str(item, "title")
 			if id == "" || seen[id] {
 				continue
 			}
@@ -194,92 +195,16 @@ func (f *FnTV) Scan(ctx context.Context, guid string, progress func(string)) ([]
 			if kind != "Movie" && kind != "TV" {
 				continue
 			}
-			if !recognized(item) {
-				warnings = append(warnings, title+"：没有识别标识，跳过")
-				continue
-			}
-			progress("正在读取文件：" + title)
-			// Item detail supplies corrected title/year where the list is incomplete.
-			detail, err := f.Call(ctx, "GET", "/v/api/v1/item/"+url.PathEscape(id), nil)
-			if err != nil {
-				return nil, nil, err
-			}
-			d := obj(detail)
-			if d == nil {
-				return nil, nil, errors.New("条目详情格式不兼容")
-			}
-			merged := object{}
-			for k, v := range item {
-				merged[k] = v
-			}
-			for k, v := range d {
-				merged[k] = v
-			}
-			title = str(merged, "title")
-			year := yearOf(merged)
-			filesData, err := f.Call(ctx, "GET", "/v/api/v1/media/itemfile/"+url.PathEscape(id), nil)
-			if err != nil {
-				return nil, nil, err
-			}
-			files := list(filesData)
-			if files == nil {
-				return nil, nil, errors.New("文件列表格式不兼容")
-			}
-			if len(files) == 0 {
-				warnings = append(warnings, title+"：未返回本地文件")
-			}
-			episodeTitles := map[string]string{}
-			if kind == "TV" && len(files) > 0 {
-				seasonsData, seasonErr := f.Call(ctx, "GET", "/v/api/v1/season/list/"+url.PathEscape(id), nil)
-				if seasonErr != nil {
-					return nil, nil, seasonErr
-				}
-				seasons := list(seasonsData)
-				if seasons == nil {
-					return nil, nil, errors.New("季识别结果格式不兼容")
-				}
-				for _, season := range seasons {
-					seasonID := str(season, "guid")
-					if seasonID == "" {
-						return nil, nil, errors.New("季识别结果缺少标识")
-					}
-					episodesData, episodeErr := f.Call(ctx, "GET", "/v/api/v1/episode/list/"+url.PathEscape(seasonID), nil)
-					if episodeErr != nil {
-						return nil, nil, episodeErr
-					}
-					episodes := list(episodesData)
-					if episodes == nil {
-						return nil, nil, errors.New("单集识别结果格式不兼容")
-					}
-					for _, ep := range episodes {
-						seasonNumber := num(ep, "season_number")
-						if _, present := ep["season_number"]; !present {
-							seasonNumber = num(season, "season_number")
-						}
-						key := fmt.Sprintf("%d:%d", seasonNumber, num(ep, "episode_number"))
-						episodeTitles[key] = str(ep, "title")
-					}
-				}
-			}
-			for _, file := range files {
-				path := str(file, "file_path")
-				if path == "" {
-					path = str(file, "path")
-				}
-				if path == "" {
-					warnings = append(warnings, title+"：文件缺少路径，跳过")
-					continue
-				}
-				m := Media{Poster: str(merged, "poster"), ID: str(file, "media_guid"), Title: title, Year: year, Kind: "movie", Source: path, Season: num(file, "season_number"), Episode: num(file, "episode_number")}
-				if m.ID == "" {
-					m.ID = id + ":" + path
-				}
-				if kind == "TV" {
-					m.Kind = "episode"
-					m.EpisodeTitle = episodeTitles[fmt.Sprintf("%d:%d", m.Season, m.Episode)]
-				}
-				out = append(out, m)
-			}
+			pageItems = append(pageItems, item)
+		}
+		progress(fmt.Sprintf("正在读取第 %d 页的 %d 部影视文件", page, len(pageItems)))
+		pageResults, err := f.scanItems(ctx, pageItems)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, result := range pageResults {
+			out = append(out, result.files...)
+			warnings = append(warnings, result.warnings...)
 		}
 		if added == 0 || (num(o, "total") >= 0 && page*100 >= num(o, "total")) || len(items) < 100 {
 			break
@@ -287,6 +212,135 @@ func (f *FnTV) Scan(ctx context.Context, guid string, progress func(string)) ([]
 		if page == 1000 {
 			return nil, nil, errors.New("媒体库超过扫描上限")
 		}
+	}
+	return out, warnings, nil
+}
+
+type scanResult struct {
+	files    []Media
+	warnings []string
+}
+
+// Limit concurrency to avoid flooding the NAS while keeping the original library order.
+func (f *FnTV) scanItems(ctx context.Context, items []object) ([]scanResult, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make([]scanResult, len(items))
+	workers := min(4, len(items))
+	var group sync.WaitGroup
+	var errorOnce sync.Once
+	var firstErr error
+	for worker := range workers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for i := worker; i < len(items) && ctx.Err() == nil; i += workers {
+				files, warnings, err := f.scanItem(ctx, items[i])
+				if err != nil {
+					errorOnce.Do(func() {
+						firstErr = err
+						cancel()
+					})
+					return
+				}
+				results[i] = scanResult{files, warnings}
+			}
+		}()
+	}
+	group.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return results, ctx.Err()
+}
+
+func (f *FnTV) scanItem(ctx context.Context, item object) ([]Media, []string, error) {
+	id, kind := str(item, "guid"), str(item, "type")
+	var warnings []string
+	if !recognized(item) {
+		return nil, []string{str(item, "title") + "：没有识别标识，跳过"}, nil
+	}
+	// Item detail supplies corrected title/year where the list is incomplete.
+	detail, err := f.Call(ctx, "GET", "/v/api/v1/item/"+url.PathEscape(id), nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	d := obj(detail)
+	if d == nil {
+		return nil, nil, errors.New("条目详情格式不兼容")
+	}
+	merged := object{}
+	for k, v := range item {
+		merged[k] = v
+	}
+	for k, v := range d {
+		merged[k] = v
+	}
+	title := str(merged, "title")
+	year := yearOf(merged)
+	filesData, err := f.Call(ctx, "GET", "/v/api/v1/media/itemfile/"+url.PathEscape(id), nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	files := list(filesData)
+	if files == nil {
+		return nil, nil, errors.New("文件列表格式不兼容")
+	}
+	if len(files) == 0 {
+		warnings = append(warnings, title+"：未返回本地文件")
+	}
+	episodeTitles := map[string]string{}
+	if kind == "TV" && len(files) > 0 {
+		seasonsData, seasonErr := f.Call(ctx, "GET", "/v/api/v1/season/list/"+url.PathEscape(id), nil)
+		if seasonErr != nil {
+			return nil, nil, seasonErr
+		}
+		seasons := list(seasonsData)
+		if seasons == nil {
+			return nil, nil, errors.New("季识别结果格式不兼容")
+		}
+		for _, season := range seasons {
+			seasonID := str(season, "guid")
+			if seasonID == "" {
+				return nil, nil, errors.New("季识别结果缺少标识")
+			}
+			episodesData, episodeErr := f.Call(ctx, "GET", "/v/api/v1/episode/list/"+url.PathEscape(seasonID), nil)
+			if episodeErr != nil {
+				return nil, nil, episodeErr
+			}
+			episodes := list(episodesData)
+			if episodes == nil {
+				return nil, nil, errors.New("单集识别结果格式不兼容")
+			}
+			for _, ep := range episodes {
+				seasonNumber := num(ep, "season_number")
+				if _, present := ep["season_number"]; !present {
+					seasonNumber = num(season, "season_number")
+				}
+				key := fmt.Sprintf("%d:%d", seasonNumber, num(ep, "episode_number"))
+				episodeTitles[key] = str(ep, "title")
+			}
+		}
+	}
+	out := make([]Media, 0, len(files))
+	for _, file := range files {
+		path := str(file, "file_path")
+		if path == "" {
+			path = str(file, "path")
+		}
+		if path == "" {
+			warnings = append(warnings, title+"：文件缺少路径，跳过")
+			continue
+		}
+		m := Media{Poster: str(merged, "poster"), ID: str(file, "media_guid"), Title: title, Year: year, Kind: "movie", Source: path, Season: num(file, "season_number"), Episode: num(file, "episode_number")}
+		if m.ID == "" {
+			m.ID = id + ":" + path
+		}
+		if kind == "TV" {
+			m.Kind = "episode"
+			m.EpisodeTitle = episodeTitles[fmt.Sprintf("%d:%d", m.Season, m.Episode)]
+		}
+		out = append(out, m)
 	}
 	return out, warnings, nil
 }

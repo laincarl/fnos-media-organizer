@@ -44,19 +44,20 @@ type TaskProgress struct {
 }
 
 type State struct {
-	Task        *TaskProgress `json:"task,omitempty"`
-	Busy        bool          `json:"busy"`
-	Progress    string        `json:"progress"`
-	Error       string        `json:"error"`
-	Version     object        `json:"version"`
-	Libraries   []object      `json:"libraries"`
-	Items       []Media       `json:"items"`
-	Warnings    []string      `json:"warnings"`
-	Plan        *Plan         `json:"plan"`
-	Inspection  *Plan         `json:"inspection"`
-	Results     []Row         `json:"results"`
-	Directories []string      `json:"directories"`
-	Account     string        `json:"account"`
+	Task          *TaskProgress `json:"task,omitempty"`
+	Busy          bool          `json:"busy"`
+	Progress      string        `json:"progress"`
+	Error         string        `json:"error"`
+	Version       object        `json:"version"`
+	Libraries     []object      `json:"libraries"`
+	Items         []Media       `json:"items"`
+	Warnings      []string      `json:"warnings"`
+	Plan          *Plan         `json:"plan"`
+	Inspection    *Plan         `json:"inspection"`
+	Results       []Row         `json:"results"`
+	Directories   []string      `json:"directories"`
+	Account       string        `json:"account"`
+	FilesRevision string        `json:"files_revision"`
 }
 type Session struct {
 	mu      sync.Mutex
@@ -212,7 +213,19 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		settings := a.settings
 		a.mu.Unlock()
-		jsonResponse(w, 200, object{"state": s.state, "roots": a.roots, "settings": settings, "missing_directories": missingDirectories(s.state.Items, s.state.Directories, a.roots)})
+		snapshot := s.state
+		out := object{"roots": a.roots, "settings": settings}
+		if snapshot.FilesRevision != "" && r.URL.Query().Get("files_revision") == snapshot.FilesRevision {
+			snapshot.Items, snapshot.Inspection, snapshot.Warnings = nil, nil, nil
+		} else {
+			out["missing_directories"] = missingDirectories(snapshot.Items, snapshot.Directories, a.roots)
+		}
+		if snapshot.Plan != nil && r.URL.Query().Get("plan_id") == snapshot.Plan.ID {
+			out["plan_unchanged"] = true
+			snapshot.Plan = nil
+		}
+		out["state"] = snapshot
+		jsonResponse(w, 200, out)
 		return
 	}
 	if r.Method != "POST" {
@@ -250,6 +263,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		s.state.Plan = nil
 		s.state.Inspection = nil
+		s.state.FilesRevision = randomID()
 		if len(s.state.Items) > 0 {
 			p, checkErr := buildLibraryPlan(s.state.Items, s.state.Directories, a.roots, nil, in.Rules)
 			if checkErr != nil {
@@ -287,6 +301,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rules := a.settings.Rules
 		a.mu.Unlock()
 		s.state.Busy = true
+		s.state.Progress = "正在读取影视库目录"
 		s.state.Error = ""
 		s.state.Items = nil
 		s.state.Plan = nil
@@ -294,6 +309,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.state.Results = nil
 		s.state.Task = nil
 		s.state.Warnings = nil
+		s.state.FilesRevision = randomID()
 		a.jobs.Add(1)
 		go func() {
 			defer a.jobs.Done()
@@ -303,15 +319,21 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if e == nil {
 				items, warnings, e = fn.Scan(a.ctx, in.Library, func(msg string) { s.mu.Lock(); s.state.Progress = msg; s.mu.Unlock() })
 			}
-			s.mu.Lock()
-			defer s.mu.Unlock()
-			s.state.Busy = false
 			if e != nil {
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				s.state.Busy = false
 				s.state.Error = e.Error()
 				s.state.Progress = "读取失败"
 				return
 			}
+			s.mu.Lock()
+			s.state.Progress = fmt.Sprintf("正在检查 %d 个文件的目录规范", len(items))
+			s.mu.Unlock()
 			inspection, checkErr := buildLibraryPlan(items, dirs, a.roots, nil, rules)
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.state.Busy = false
 			if checkErr != nil {
 				s.state.Error = checkErr.Error()
 			}
@@ -319,6 +341,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.state.Directories = dirs
 			s.state.Items = items
 			s.state.Warnings = warnings
+			s.state.FilesRevision = randomID()
 			s.state.Progress = fmt.Sprintf("已读取并检查，共 %d 个文件", len(items))
 		}()
 		jsonResponse(w, 202, object{"ok": true})
@@ -360,6 +383,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.URL.Path == "/api/check" {
 			s.state.Inspection = p
+			s.state.FilesRevision = randomID()
 			s.state.Plan = nil
 		} else {
 			s.state.Plan = p
@@ -473,6 +497,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					for n := range s.state.Items {
 						if s.state.Items[n].ID == row.ID && s.state.Items[n].Source == row.Source {
 							s.state.Items[n].Source = row.Target
+							s.state.FilesRevision = randomID()
 						}
 					}
 				}
@@ -494,6 +519,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			currentRules := a.settings.Rules
 			a.mu.Unlock()
 			s.state.Inspection, _ = buildLibraryPlan(s.state.Items, s.state.Directories, a.roots, nil, currentRules)
+			s.state.FilesRevision = randomID()
 			if s.state.Task.Completed < s.state.Task.Total {
 				s.state.Progress = "整理已停止，请检查执行结果"
 			} else {

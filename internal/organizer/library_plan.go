@@ -42,14 +42,19 @@ func buildLibraryPlan(items []Media, dirs, authorized []string, formats map[stri
 		}
 		p.Rows = append(p.Rows, plan.Rows...)
 	}
-	// Stable display order, independent of map iteration.
-	ordered := []Row{}
+	// Restore the input order without scanning the entire plan for each file.
+	type fileKey struct{ id, path string }
+	index := make(map[fileKey]Row, len(p.Rows))
+	for _, row := range p.Rows {
+		key := fileKey{row.ID, filepath.Clean(row.Source)}
+		if _, exists := index[key]; !exists {
+			index[key] = row
+		}
+	}
+	ordered := make([]Row, 0, len(p.Rows))
 	for _, m := range items {
-		for _, r := range p.Rows {
-			if r.ID == m.ID && r.Source == m.Source {
-				ordered = append(ordered, r)
-				break
-			}
+		if row, exists := index[fileKey{m.ID, filepath.Clean(m.Source)}]; exists {
+			ordered = append(ordered, row)
 		}
 	}
 	p.Rows = ordered
